@@ -51,7 +51,7 @@ def read_wav(filename):
 def _skip_unknown_chunk(fid):
     data = fid.read(4)
     size = struct.unpack('<i', data)[0]
-    if bool(size & 1):     # if odd number of bytes, move 1 byte further (data chunk is word-aligned)
+    if bool(size & 1):
       size += 1 
     fid.seek(size, 1)
 
@@ -70,17 +70,29 @@ def _read_riff_chunk(fid):
 def read_wav_markers(filename):
     with open(filename, 'rb') as f:
         fsize = _read_riff_chunk(f)
-        cue = []
+        cues = []
         while (f.tell() < fsize):
             chunk_id = f.read(4)
             if chunk_id == b'cue ':
                 size, numcue = struct.unpack('<ii',f.read(8))
                 for c in range(numcue):
                     id, position, datachunkid, chunkstart, blockstart, sampleoffset = struct.unpack('<iiiiii',f.read(24))
-                    cue.append(position)
+                    cues.append(position)
             else:
                 _skip_unknown_chunk(f)
-        return cue
+        return cues
+
+def create_splits(cues, length):
+    splits = []
+    splits.extend(sorted(cues[:8]))
+    if (len(splits) == 0):
+        splits.append(0)
+    missing = 8 - len(splits)
+    last_split = splits[-1]
+    split_size = (SAMPLE_COUNT - last_split) / (missing + 1)
+    for i in range(1, missing + 1):
+        splits.append(int(last_split + i * split_size))
+    return splits
 
 def create_waveform(data):
     blocks = [data[i:i + SAMPLE_WAVEFORM_BLOCKSIZE * 2] for i in range(0, len(data), SAMPLE_WAVEFORM_BLOCKSIZE * 2)]
@@ -107,7 +119,7 @@ def read_uf2(filename):
     previous_address = None
     for block in blocks:
         (magic_start_0, magic_start_1, flags, target_address, payload_size, block_no, num_blocks, family_id) = struct.unpack_from('<IIIIIIII', block, 0)
-        # print(f"> magic0={magic_start_0:#0x} magic1={magic_start_1:#0x} flags={flags:#0x} target={target_address:#0x} size={payload_size:#0x} block={block_no:#0x} blocks={num_blocks:#0x} family={family_id:#0x}")
+        # print(f"U> magic0={magic_start_0:#0x} magic1={magic_start_1:#0x} flags={flags:#0x} target={target_address:#0x} size={payload_size:#0x} block={block_no:#0x} blocks={num_blocks:#0x} family={family_id:#0x}")
 
         if previous_address is not None and target_address != previous_address + payload_size:
             raise ValueError("UF2 data is not contiguous.")
@@ -128,7 +140,7 @@ def write_uf2(data, filename, target_address):
             f.write(b'\x00' * (UF2_BLOCK_SIZE - UF2_PAYLOAD_SIZE - UF2_PAYLOAD_OFFSET - 4))
             f.write(struct.pack('<I', UF2_MAGIC_END))
             i += 1
-    print(f"Wrote {filename}")
+    print(f"U> Wrote {filename}")
 
 def write_uf2sample(data, index):
     filename = f"SAMPLE{index}.UF2"
@@ -192,22 +204,24 @@ def update_sample_page(data, index):
     offset = find_sample_offset(data, index)
     (idx, version, crc, seq) = read_page_footer(data, offset)
     ccrc = calculate_page_crc(data, offset)
-    print(f"> footer idx={idx} version={version} crc={crc:#0x} ({ccrc:#0x}) seq={seq}")
+    print(f"U> footer idx={idx} version={version} crc={crc:#0x} ({ccrc:#0x}) seq={seq}")
     (waveform, split0, split1, split2, split3, split4, split5, split6, split7, sample_len, note0, note1, note2, note3, note4, note5, note6, note7, pitched, loop) = read_sample_info(data, offset)
 
-    print(f"> sample splits=[{split0},{split1},{split2},{split3},{split4},{split5},{split6},{split7}], len={sample_len}")
-    print(f"> sample notes=[{note0},{note1},{note2},{note3},{note4},{note5},{note6},{note7}], pitched={pitched}, loop={loop}")
-    print(f"> waveform={','.join([f"{x:02x}" for x in waveform])}")
+    print(f"U> sample splits=[{split0},{split1},{split2},{split3},{split4},{split5},{split6},{split7}], len={sample_len}")
+    print(f"U> sample notes=[{note0},{note1},{note2},{note3},{note4},{note5},{note6},{note7}], pitched={pitched}, loop={loop}")
+    # print(f"U> waveform={','.join([f"{x:02x}" for x in waveform])}")
 
 def main(filename, index):
-    print(f"Processing {filename}")
+    print(f"S> Processing {filename}")
     (sample_data, sample_frames) = read_wav(filename)
     write_uf2sample(sample_data, index)
-    print(f"> sample frames {sample_frames}")
+
+    print(f"S> sample frames {sample_frames}")
     waveform = create_waveform(sample_data)
-    print(f"> waveform={','.join([f"{x:02x}" for x in waveform])}")
-    cue = read_wav_markers(filename)
-    print(f"> markers {cue}")
+    # print(f"S> waveform={','.join([f"{x:02x}" for x in waveform])}")
+    markers = read_wav_markers(filename)
+    print(f"S> markers {markers}")
+    splits = create_splits(markers, sample_frames)
 
     presets_data = read_uf2("PRESETS-O.UF2")
     update_sample_page(presets_data, index)
