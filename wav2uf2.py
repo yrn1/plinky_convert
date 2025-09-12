@@ -221,6 +221,12 @@ def update_sample_page(data, index, sample_len, waveform, splits):
     return ba
 
 def main(filename, index):
+    if not os.path.exists("PRESETS.UF2"):
+        logging.info("This script must be run in a directory that contains PRESETS.UF2.")
+        logging.info("It will be updated to contain the waveform, length and split points.")
+        logging.info("Please don't run it in the mounted PLINKY volume.")
+        sys.exit(1)
+
     logging.info(f"Processing {filename}")
     sample_data, sample_len = read_wav(filename)
     logging.debug(f"Sample length {sample_len}")
@@ -244,6 +250,9 @@ def main(filename, index):
 if __name__ == '__main__':
     if len(sys.argv) < 3:
         logging.info(f"Usage: python {sys.argv[0]} <file.wav> <index>")
+        logging.info("  <file.wav> must be a 32kHz, 16bit mono WAV file.")
+        logging.info("     The first 8 RIFF CUE points will be converted to split points.")
+        logging.info("  <index> is the index where the sample will live in Plinky. 0 to 7.")
         sys.exit(1)
     
     filename = sys.argv[1]
