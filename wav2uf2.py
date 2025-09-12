@@ -35,6 +35,9 @@ PRESET_VERSION = 2
 PRESET_PATTERNS_IDX = PRESET_NUM_PRESETS
 PRESET_SAMPLES_IDX = PRESET_PATTERNS_IDX + 4 * PRESET_NUM_PATTERNS
 
+#
+# WAV file related methods
+#
 def read_wav(filename):
     with wave.open(filename, 'rb') as f:
         if f.getnchannels() != 1:
@@ -115,6 +118,9 @@ def create_waveform(data):
         struct.pack_into('<B', packed, int(i / 2), sample0 + 16 * sample1)
     return packed
 
+#
+# UF2 file related methods
+#
 def read_uf2(filename):
     with open(filename, 'rb') as f:
         content = f.read()
@@ -123,8 +129,8 @@ def read_uf2(filename):
     data_blocks = []
     previous_address = None
     for block in blocks:
-        (magic_start_0, magic_start_1, flags, target_address, payload_size, block_no, num_blocks, family_id) = struct.unpack_from('<IIIIIIII', block, 0)
-        logging.debug(f"U> magic0={magic_start_0:#0x} magic1={magic_start_1:#0x} flags={flags:#0x} target={target_address:#0x} size={payload_size:#0x} block={block_no:#0x} blocks={num_blocks:#0x} family={family_id:#0x}")
+        magic_start_0, magic_start_1, flags, target_address, payload_size, block_no, num_blocks, family_id = struct.unpack_from('<IIIIIIII', block, 0)
+        logging.debug(f"UF2 magic0={magic_start_0:#0x} magic1={magic_start_1:#0x} flags={flags:#0x} target={target_address:#0x} size={payload_size:#0x} block={block_no:#0x} blocks={num_blocks:#0x} family={family_id:#0x}")
 
         if previous_address is not None and target_address != previous_address + payload_size:
             raise ValueError("UF2 data is not contiguous.")
@@ -137,29 +143,37 @@ def read_uf2(filename):
 def write_uf2(data, filename, target_address):
     with open(filename, 'wb') as f:
         blocks = [data[i:i+UF2_PAYLOAD_SIZE] for i in range(0, len(data), UF2_PAYLOAD_SIZE)]
-        i = 0
-        for block in blocks:
+        for i in range(0, len(blocks)):
             block_target_address = target_address + i * UF2_PAYLOAD_SIZE
             f.write(struct.pack('<IIIIIIII', UF2_MAGIC_START_0, UF2_MAGIC_START_1, UF2_FLAGS, block_target_address, UF2_PAYLOAD_SIZE, i, len(blocks), UF2_FAMILY_ID))
             f.write(data[i * UF2_PAYLOAD_SIZE:i * UF2_PAYLOAD_SIZE + UF2_PAYLOAD_SIZE])
             f.write(b'\x00' * (UF2_BLOCK_SIZE - UF2_PAYLOAD_SIZE - UF2_PAYLOAD_OFFSET - 4))
             f.write(struct.pack('<I', UF2_MAGIC_END))
-            i += 1
-    logging.info(f"U> Wrote {filename}")
+    logging.info(f"Wrote {filename}")
 
 def write_uf2sample(data, index):
     filename = f"SAMPLE{index}.UF2"
     write_uf2(data, filename, SAMPLE_TARGET_ADDRESS_OFFSET + index * SAMPLE_NUM_BLOCKS * UF2_PAYLOAD_SIZE)
 
+#
+# PRESETS related methods
+#
 def read_page_footer(data, offset):
-    # typedef struct PageFooter {
-    # 	u8 idx; // preset 0-31, pattern (quarters!) 32-127, sample 128-136, blank=0xff
-    # 	u8 version;
-    # 	u16 crc;
-    # 	u32 seq;
-    # } PageFooter;
-    (idx, version, crc, seq) = struct.unpack_from('<BBHI', data, offset + PRESET_PAGE_SIZE - PRESET_PAGE_FOOTER_SIZE)
+    idx, version, crc, seq = struct.unpack_from('<BBHI', data, offset + PRESET_PAGE_SIZE - PRESET_PAGE_FOOTER_SIZE)
     return (idx, version, crc, seq)
+
+def find_sample_offset(data, index):
+    preset_idx = PRESET_SAMPLES_IDX + index
+    cur_seq = 0
+    offset = 0
+
+    for o in range(0, len(data), PRESET_PAGE_SIZE):
+        idx, version, crc, seq = read_page_footer(data, o)
+        if idx == preset_idx and version == PRESET_VERSION:
+            if seq > cur_seq:
+                cur_seq = seq
+                offset = o
+    return offset
 
 def calculate_page_crc(data, offset):
     hash = 123
@@ -168,55 +182,24 @@ def calculate_page_crc(data, offset):
     return hash
 
 def read_sample_info(data, offset):
-    # typedef struct SampleInfo {
-    # 	u8 waveform4_b[1024]; // 4 bits x 2048 points, every 1024 samples
-    # 	int splitpoints[8];
-    # 	int samplelen; // must be after splitpoints, so that splitpoints[8] is always the length.
-    # 	s8 notes[8];
-    # 	u8 pitched;
-    # 	u8 loop; // bottom bit: loop; next bit: slice vs all
-    # 	u8 paddy[2];
-    # } SampleInfo;
-    (waveform, split0, split1, split2, split3, split4, split5, split6, split7, sample_len, note0, note1, note2, note3, note4, note5, note6, note7, pitched, loop) = struct.unpack_from('<1024s8ii8bBB', data, offset)
+    waveform, split0, split1, split2, split3, split4, split5, split6, split7, sample_len, note0, note1, note2, note3, note4, note5, note6, note7, pitched, loop = struct.unpack_from('<1024s8ii8bBB', data, offset)
     splits = [split0, split1, split2, split3, split4, split5, split6, split7]
     notes = [note0, note1, note2, note3, note4, note5, note6, note7]
     return (waveform, sample_len, splits, notes, pitched, loop)
 
-def find_sample_offset(data, index):
-    # typedef struct FlashPage {
-    # 	union {
-    # 		u8 raw[FLASH_PAGE_SIZE - sizeof(SysParams) - sizeof(PageFooter)];
-    # 		Preset preset;
-    # 		PatternQuarter pattern_quarter;
-    # 		SampleInfo sample_info;
-    # 	};
-    # 	SysParams sys_params;
-    # 	PageFooter footer;
-    # } FlashPage;
-    preset_idx = PRESET_SAMPLES_IDX + index
-    cur_seq = 0
-    offset = 0
-
-    for o in range(0, len(data), PRESET_PAGE_SIZE):
-        (idx, version, crc, seq) = read_page_footer(data, o)
-        if idx == preset_idx and version == PRESET_VERSION:
-            if seq > cur_seq:
-                cur_seq = seq
-                offset = o
-    return offset
-
-def print_sample_page(data, index):
+def print_sample_page(msg, data, index):
     offset = find_sample_offset(data, index)
-    (idx, version, crc, seq) = read_page_footer(data, offset)
+    idx, version, crc, seq = read_page_footer(data, offset)
     ccrc = calculate_page_crc(data, offset)
-    logging.debug(f"P> data len={len(data)}")
-    logging.debug(f"P> footer idx={idx} version={version} crc={crc:#0x} calculated_crc={ccrc:#0x} seq={seq}")
-    (waveform, sample_len, splits, notes, pitched, loop) = read_sample_info(data, offset)
-
-    logging.debug(f"P> sample_len={sample_len}, pitched={pitched}, loop={loop}")
-    logging.debug(f"P> splits={[f"{x:02x}" for x in splits]}")
-    logging.debug(f"P> notes={notes}")
-    logging.debug(f"P> waveform={''.join([f"{x:02x}" for x in waveform])}")
+    logging.debug("")
+    logging.debug(msg)
+    logging.debug(f"Presets Sample data length={len(data)}")
+    logging.debug(f"Presets Sample footer idx={idx} version={version} crc={crc:#0x} calculated_crc={ccrc:#0x} seq={seq}")
+    waveform, sample_len, splits, notes, pitched, loop = read_sample_info(data, offset)
+    logging.debug(f"Presets Sample length={sample_len}, pitched={pitched}, loop={loop}")
+    logging.debug(f"Presets Sample splits={[f"{x:02x}" for x in splits]}")
+    logging.debug(f"Presets Sample notes={notes}")
+    logging.debug(f"Presets Sample waveform={''.join([f"{x:02x}" for x in waveform])}")
 
 def update_sample_page(data, index, sample_len, waveform, splits):
     ba = bytearray(data)
@@ -227,30 +210,26 @@ def update_sample_page(data, index, sample_len, waveform, splits):
     return ba
 
 def main(filename, index):
-    logging.info(f"S> Processing {filename}")
-    (sample_data, sample_len) = read_wav(filename)
-    logging.debug(f"S> sample len {sample_len}")
+    logging.info(f"Processing {filename}")
+    sample_data, sample_len = read_wav(filename)
+    logging.debug(f"Sample length {sample_len}")
     write_uf2sample(sample_data, index)
 
     waveform = create_waveform(sample_data)
     markers = read_wav_markers(filename)
-    logging.debug(f"S> markers from wav {markers}")
+    logging.debug(f"Markers from WAV {markers}")
 
     splits = create_splits(markers, sample_len)
-    logging.debug(f"S> splits {splits}")
+    logging.debug(f"Completed splits {splits}")
 
     presets_data = read_uf2("PRESETS.UF2")
-    logging.debug("")
-    logging.debug("P> Before update:")
-    print_sample_page(presets_data, index)
+    print_sample_page("Before update:", presets_data, index)
     updated_presets_data = update_sample_page(presets_data, index, sample_len, waveform, splits)
     shutil.copy("PRESETS.UF2", "PRESETS.BAK")
     write_uf2(updated_presets_data, "PRESETS.UF2", PRESET_TARGET_ADDRESS_OFFSET)
 
     presets_data = read_uf2("PRESETS.UF2")
-    logging.debug("")
-    logging.debug("P> After update:")
-    print_sample_page(presets_data, index)
+    print_sample_page("After update:", presets_data, index)
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
