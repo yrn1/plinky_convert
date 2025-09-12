@@ -4,7 +4,9 @@ import struct
 import wave
 import math
 import shutil
+import os
 import logging
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
@@ -140,7 +142,16 @@ def read_uf2(filename):
     
     return b''.join(data_blocks)
 
+def create_backup(filename):
+    if os.path.exists(filename):
+        suf = datetime.now().strftime("-%Y%m%d%H%M%S")
+        i = 1
+        while os.path.exists(filename + suf + "-" + str(i)):
+            i += 1
+        shutil.copy(filename, filename + suf + "-" + str(i))
+
 def write_uf2(data, filename, target_address):
+    create_backup(filename)
     with open(filename, 'wb') as f:
         blocks = [data[i:i+UF2_PAYLOAD_SIZE] for i in range(0, len(data), UF2_PAYLOAD_SIZE)]
         for i in range(0, len(blocks)):
@@ -225,7 +236,6 @@ def main(filename, index):
     presets_data = read_uf2("PRESETS.UF2")
     print_sample_page("Before update:", presets_data, index)
     updated_presets_data = update_sample_page(presets_data, index, sample_len, waveform, splits)
-    shutil.copy("PRESETS.UF2", "PRESETS.BAK")
     write_uf2(updated_presets_data, "PRESETS.UF2", PRESET_TARGET_ADDRESS_OFFSET)
 
     presets_data = read_uf2("PRESETS.UF2")
