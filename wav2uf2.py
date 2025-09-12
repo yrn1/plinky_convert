@@ -4,6 +4,7 @@ import os
 import struct
 import wave
 import math
+import shutil
 
 UF2_MAGIC_START_0 = 0x0a324655
 UF2_MAGIC_START_1 = 0x9e5d5157
@@ -20,12 +21,14 @@ SAMPLE_COUNT = 0x200000
 SAMPLE_PADDING = b'\xff\xff'
 SAMPLE_WAVEFORM_BLOCKSIZE = 1024
 
+PRESET_TARGET_ADDRESS_OFFSET = 0x08080000
 PRESET_PAGE_SIZE = 2048
 PRESET_PAGE_FOOTER_SIZE = 8
 PRESET_SYSPARAMS_SIZE = 16
 PRESET_NUM_PRESETS = 32
 PRESET_NUM_PATTERNS = 24
 PRESET_NUM_SAMPLES = 8
+PRESET_VERSION = 2
 
 PRESET_PATTERNS_IDX = PRESET_NUM_PRESETS
 PRESET_SAMPLES_IDX = PRESET_PATTERNS_IDX + 4 * PRESET_NUM_PATTERNS
@@ -102,7 +105,7 @@ def create_waveform(data):
         for s in range(0, len(block), 2):
             sample = struct.unpack_from('<h', block, s)
             peak = max(peak, abs(sample[0]))
-        waveform.append(round(peak / 1024))
+        waveform.append(math.floor(peak / 1024))
     packed = bytearray(1024)
     for i in range(0, len(waveform), 2):
         sample0 = max(min(waveform[i], 15), 0)
@@ -153,9 +156,8 @@ def read_page_footer(data, offset):
     # 	u16 crc;
     # 	u32 seq;
     # } PageFooter;
-    tuple = struct.unpack_from('<BBHI', data, offset + PRESET_PAGE_SIZE - PRESET_PAGE_FOOTER_SIZE)
-    (idx, version, crc, seq) = tuple
-    return tuple
+    (idx, version, crc, seq) = struct.unpack_from('<BBHI', data, offset + PRESET_PAGE_SIZE - PRESET_PAGE_FOOTER_SIZE)
+    return (idx, version, crc, seq)
 
 def calculate_page_crc(data, offset):
     hash = 123
@@ -173,9 +175,10 @@ def read_sample_info(data, offset):
     # 	u8 loop; // bottom bit: loop; next bit: slice vs all
     # 	u8 paddy[2];
     # } SampleInfo;
-    tuple = struct.unpack_from('<1024s8ii8bBB', data, offset)
-    (waveform, split0, split1, split2, split3, split4, split5, split6, split7, sample_len, note0, note1, note2, note3, note4, note5, note6, note7, pitched, loop) = tuple
-    return tuple
+    (waveform, split0, split1, split2, split3, split4, split5, split6, split7, sample_len, note0, note1, note2, note3, note4, note5, note6, note7, pitched, loop) = struct.unpack_from('<1024s8ii8bBB', data, offset)
+    splits = [split0, split1, split2, split3, split4, split5, split6, split7]
+    notes = [note0, note1, note2, note3, note4, note5, note6, note7]
+    return (waveform, sample_len, splits, notes, pitched, loop)
 
 def find_sample_offset(data, index):
     # typedef struct FlashPage {
@@ -194,37 +197,58 @@ def find_sample_offset(data, index):
 
     for o in range(0, len(data), PRESET_PAGE_SIZE):
         (idx, version, crc, seq) = read_page_footer(data, o)
-        if idx == preset_idx:
+        if idx == preset_idx and version == PRESET_VERSION:
             if seq > cur_seq:
                 cur_seq = seq
                 offset = o
     return offset
 
-def update_sample_page(data, index):
+def print_sample_page(data, index):
     offset = find_sample_offset(data, index)
     (idx, version, crc, seq) = read_page_footer(data, offset)
     ccrc = calculate_page_crc(data, offset)
-    print(f"U> footer idx={idx} version={version} crc={crc:#0x} ({ccrc:#0x}) seq={seq}")
-    (waveform, split0, split1, split2, split3, split4, split5, split6, split7, sample_len, note0, note1, note2, note3, note4, note5, note6, note7, pitched, loop) = read_sample_info(data, offset)
+    print(f"P> data len={len(data)}")
+    print(f"P> footer idx={idx} version={version} crc={crc:#0x} calculated_crc={ccrc:#0x} seq={seq}")
+    (waveform, sample_len, splits, notes, pitched, loop) = read_sample_info(data, offset)
 
-    print(f"U> sample splits=[{split0},{split1},{split2},{split3},{split4},{split5},{split6},{split7}], len={sample_len}")
-    print(f"U> sample notes=[{note0},{note1},{note2},{note3},{note4},{note5},{note6},{note7}], pitched={pitched}, loop={loop}")
-    # print(f"U> waveform={','.join([f"{x:02x}" for x in waveform])}")
+    print(f"P> sample_len={sample_len}, pitched={pitched}, loop={loop}")
+    print(f"P> splits={[f"{x:02x}" for x in splits]}")
+    print(f"P> notes={notes}")
+    print(f"P> waveform={''.join([f"{x:02x}" for x in waveform])}")
+
+def update_sample_page(data, index, sample_len, waveform, splits):
+    ba = bytearray(data)
+    offset = find_sample_offset(data, index)
+    struct.pack_into('<1024s8ii', ba, offset, waveform, splits[0], splits[1], splits[2], splits[3], splits[4], splits[5], splits[6], splits[7], sample_len)
+    crc = calculate_page_crc(ba, offset)
+    struct.pack_into('<H', ba, offset + PRESET_PAGE_SIZE - PRESET_PAGE_FOOTER_SIZE + 2, crc)
+    return ba
 
 def main(filename, index):
     print(f"S> Processing {filename}")
-    (sample_data, sample_frames) = read_wav(filename)
+    (sample_data, sample_len) = read_wav(filename)
+    print(f"S> sample len {sample_len}")
     write_uf2sample(sample_data, index)
 
-    print(f"S> sample frames {sample_frames}")
     waveform = create_waveform(sample_data)
-    # print(f"S> waveform={','.join([f"{x:02x}" for x in waveform])}")
     markers = read_wav_markers(filename)
-    print(f"S> markers {markers}")
-    splits = create_splits(markers, sample_frames)
+    print(f"S> markers from wav {markers}")
 
-    presets_data = read_uf2("PRESETS-O.UF2")
-    update_sample_page(presets_data, index)
+    splits = create_splits(markers, sample_len)
+    print(f"S> splits {splits}")
+
+    presets_data = read_uf2("PRESETS.UF2")
+    print("")
+    print("P> Before update:")
+    print_sample_page(presets_data, index)
+    updated_presets_data = update_sample_page(presets_data, index, sample_len, waveform, splits)
+    shutil.copy("PRESETS.UF2", "PRESETS.BAK")
+    write_uf2(updated_presets_data, "PRESETS.UF2", PRESET_TARGET_ADDRESS_OFFSET)
+
+    presets_data = read_uf2("PRESETS.UF2")
+    print("")
+    print("P> After update:")
+    print_sample_page(presets_data, index)
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
