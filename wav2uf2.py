@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import sys
-import os
 import struct
 import wave
 import math
 import shutil
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 UF2_MAGIC_START_0 = 0x0a324655
 UF2_MAGIC_START_1 = 0x9e5d5157
@@ -92,7 +94,7 @@ def create_splits(cues, length):
         splits.append(0)
     missing = 8 - len(splits)
     last_split = splits[-1]
-    split_size = (SAMPLE_COUNT - last_split) / (missing + 1)
+    split_size = (length - last_split) / (missing + 1)
     for i in range(1, missing + 1):
         splits.append(int(last_split + i * split_size))
     return splits
@@ -122,7 +124,7 @@ def read_uf2(filename):
     previous_address = None
     for block in blocks:
         (magic_start_0, magic_start_1, flags, target_address, payload_size, block_no, num_blocks, family_id) = struct.unpack_from('<IIIIIIII', block, 0)
-        # print(f"U> magic0={magic_start_0:#0x} magic1={magic_start_1:#0x} flags={flags:#0x} target={target_address:#0x} size={payload_size:#0x} block={block_no:#0x} blocks={num_blocks:#0x} family={family_id:#0x}")
+        logging.debug(f"U> magic0={magic_start_0:#0x} magic1={magic_start_1:#0x} flags={flags:#0x} target={target_address:#0x} size={payload_size:#0x} block={block_no:#0x} blocks={num_blocks:#0x} family={family_id:#0x}")
 
         if previous_address is not None and target_address != previous_address + payload_size:
             raise ValueError("UF2 data is not contiguous.")
@@ -143,7 +145,7 @@ def write_uf2(data, filename, target_address):
             f.write(b'\x00' * (UF2_BLOCK_SIZE - UF2_PAYLOAD_SIZE - UF2_PAYLOAD_OFFSET - 4))
             f.write(struct.pack('<I', UF2_MAGIC_END))
             i += 1
-    print(f"U> Wrote {filename}")
+    logging.info(f"U> Wrote {filename}")
 
 def write_uf2sample(data, index):
     filename = f"SAMPLE{index}.UF2"
@@ -207,14 +209,14 @@ def print_sample_page(data, index):
     offset = find_sample_offset(data, index)
     (idx, version, crc, seq) = read_page_footer(data, offset)
     ccrc = calculate_page_crc(data, offset)
-    print(f"P> data len={len(data)}")
-    print(f"P> footer idx={idx} version={version} crc={crc:#0x} calculated_crc={ccrc:#0x} seq={seq}")
+    logging.debug(f"P> data len={len(data)}")
+    logging.debug(f"P> footer idx={idx} version={version} crc={crc:#0x} calculated_crc={ccrc:#0x} seq={seq}")
     (waveform, sample_len, splits, notes, pitched, loop) = read_sample_info(data, offset)
 
-    print(f"P> sample_len={sample_len}, pitched={pitched}, loop={loop}")
-    print(f"P> splits={[f"{x:02x}" for x in splits]}")
-    print(f"P> notes={notes}")
-    print(f"P> waveform={''.join([f"{x:02x}" for x in waveform])}")
+    logging.debug(f"P> sample_len={sample_len}, pitched={pitched}, loop={loop}")
+    logging.debug(f"P> splits={[f"{x:02x}" for x in splits]}")
+    logging.debug(f"P> notes={notes}")
+    logging.debug(f"P> waveform={''.join([f"{x:02x}" for x in waveform])}")
 
 def update_sample_page(data, index, sample_len, waveform, splits):
     ba = bytearray(data)
@@ -225,34 +227,34 @@ def update_sample_page(data, index, sample_len, waveform, splits):
     return ba
 
 def main(filename, index):
-    print(f"S> Processing {filename}")
+    logging.info(f"S> Processing {filename}")
     (sample_data, sample_len) = read_wav(filename)
-    print(f"S> sample len {sample_len}")
+    logging.debug(f"S> sample len {sample_len}")
     write_uf2sample(sample_data, index)
 
     waveform = create_waveform(sample_data)
     markers = read_wav_markers(filename)
-    print(f"S> markers from wav {markers}")
+    logging.debug(f"S> markers from wav {markers}")
 
     splits = create_splits(markers, sample_len)
-    print(f"S> splits {splits}")
+    logging.debug(f"S> splits {splits}")
 
     presets_data = read_uf2("PRESETS.UF2")
-    print("")
-    print("P> Before update:")
+    logging.debug("")
+    logging.debug("P> Before update:")
     print_sample_page(presets_data, index)
     updated_presets_data = update_sample_page(presets_data, index, sample_len, waveform, splits)
     shutil.copy("PRESETS.UF2", "PRESETS.BAK")
     write_uf2(updated_presets_data, "PRESETS.UF2", PRESET_TARGET_ADDRESS_OFFSET)
 
     presets_data = read_uf2("PRESETS.UF2")
-    print("")
-    print("P> After update:")
+    logging.debug("")
+    logging.debug("P> After update:")
     print_sample_page(presets_data, index)
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
-        print(f"Usage: python {sys.argv[0]} <file.wav> <index>")
+        logging.info(f"Usage: python {sys.argv[0]} <file.wav> <index>")
         sys.exit(1)
     
     filename = sys.argv[1]
