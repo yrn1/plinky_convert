@@ -5,8 +5,8 @@
 ## WAV to Plinky
 
 [`wav2uf2.py`](wav2uf2.py) converts a 32kHz, 16bit, mono WAV file with cue
-markers to a plinky `SAMPLEx.UF2` and updates a `PRESETS.UF2` file to include
-the correct waveform, sample length and split points.
+markers to a plinky `SAMPLE<index>.UF2` and updates a `PRESETS.UF2` file to
+include the correct waveform, sample length and split points.
 
 ### Procedure
 
@@ -27,9 +27,10 @@ the correct waveform, sample length and split points.
   * The first 8 cue markers in the WAV file are converted to split points
     in `PRESET.UF2`. If there are less than 8 cue markers, then the remaining
     split points are evenly distributed in the remaining space.
+* Copy `PRESETS.UF2` and `SAMPLE<index>.UF2` back to your Plinky.
 
 ## Plinky to WAV
 
-[`uf22wav.py`](uf22wav.py) converts a `SAMPLEx.UF2` from Plinky to a 16bit,
-32kHz, mono WAV file. Note that it does not set the sample length correctly
-and it does not retrieve the split points.
+[`uf22wav.py`](uf22wav.py) converts a `SAMPLE<index>.UF2` from Plinky to a
+16bit, 32kHz, mono WAV file. Note that it does not set the sample length
+correctly and it does not retrieve the split points.
