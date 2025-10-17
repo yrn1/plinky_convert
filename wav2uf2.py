@@ -208,9 +208,11 @@ def print_sample_page(msg, data, index):
     logging.debug(f"Presets Sample footer idx={idx} version={version} crc={crc:#0x} calculated_crc={ccrc:#0x} seq={seq}")
     waveform, sample_len, splits, notes, pitched, loop = read_sample_info(data, offset)
     logging.debug(f"Presets Sample length={sample_len}, pitched={pitched}, loop={loop}")
-    logging.debug(f"Presets Sample splits={[f"{x:02x}" for x in splits]}")
+    tmp = [f"{x:02x}" for x in splits]
+    logging.debug(f"Presets Sample splits={tmp}")
     logging.debug(f"Presets Sample notes={notes}")
-    logging.debug(f"Presets Sample waveform={''.join([f"{x:02x}" for x in waveform])}")
+    tmp = ''.join([ f"{x:02x}" for x in waveform])
+    logging.debug(f"Presets Sample waveform={tmp}")
 
 def update_sample_page(data, index, sample_len, waveform, splits):
     ba = bytearray(data)
